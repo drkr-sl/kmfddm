@@ -13,6 +13,14 @@ import (
 	"github.com/lib/pq"
 )
 
+const deleteDeclaration = `-- name: DeleteDeclaration :execresult
+DELETE FROM declarations WHERE identifier = $1
+`
+
+func (q *Queries) DeleteDeclaration(ctx context.Context, identifier string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deleteDeclaration, identifier)
+}
+
 const deleteStatusErrors = `-- name: DeleteStatusErrors :exec
 DELETE FROM
     status_errors
@@ -134,6 +142,71 @@ func (q *Queries) GetDeclaration(ctx context.Context, identifier string) (GetDec
 	return i, err
 }
 
+const getDeclarationIdentifiers = `-- name: GetDeclarationIdentifiers :many
+SELECT identifier FROM declarations
+`
+
+func (q *Queries) GetDeclarationIdentifiers(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getDeclarationIdentifiers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var identifier string
+		if err := rows.Scan(&identifier); err != nil {
+			return nil, err
+		}
+		items = append(items, identifier)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getDeclarationModTime = `-- name: GetDeclarationModTime :one
+SELECT updated_at FROM declarations WHERE identifier = $1
+`
+
+func (q *Queries) GetDeclarationModTime(ctx context.Context, identifier string) (time.Time, error) {
+	row := q.db.QueryRowContext(ctx, getDeclarationModTime, identifier)
+	var updated_at time.Time
+	err := row.Scan(&updated_at)
+	return updated_at, err
+}
+
+const getDeclarationSets = `-- name: GetDeclarationSets :many
+SELECT set_name FROM set_declarations WHERE declaration_identifier = $1
+`
+
+func (q *Queries) GetDeclarationSets(ctx context.Context, declarationIdentifier string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getDeclarationSets, declarationIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var set_name string
+		if err := rows.Scan(&set_name); err != nil {
+			return nil, err
+		}
+		items = append(items, set_name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getDeclarationStatus = `-- name: GetDeclarationStatus :many
 SELECT
     sd.enrollment_id,
@@ -200,6 +273,78 @@ func (q *Queries) GetDeclarationStatus(ctx context.Context, ids []string) ([]Get
 	return items, nil
 }
 
+const getEnrollmentIDs = `-- name: GetEnrollmentIDs :many
+SELECT DISTINCT
+    es.enrollment_id
+FROM
+    enrollment_sets es
+    LEFT JOIN set_declarations sd
+        ON sd.set_name = es.set_name
+    LEFT JOIN declarations d
+        ON d.identifier = sd.declaration_identifier
+WHERE
+    d.identifier = ANY($1::text[]) OR
+    es.set_name = ANY($2::text[]) OR
+    es.enrollment_id = ANY($3::text[])
+`
+
+type GetEnrollmentIDsParams struct {
+	Declarations []string
+	Sets         []string
+	Ids          []string
+}
+
+// An empty array matches nothing, so unused filters drop out of the OR.
+func (q *Queries) GetEnrollmentIDs(ctx context.Context, arg GetEnrollmentIDsParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getEnrollmentIDs, pq.Array(arg.Declarations), pq.Array(arg.Sets), pq.Array(arg.Ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var enrollment_id string
+		if err := rows.Scan(&enrollment_id); err != nil {
+			return nil, err
+		}
+		items = append(items, enrollment_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getEnrollmentSets = `-- name: GetEnrollmentSets :many
+SELECT set_name FROM enrollment_sets WHERE enrollment_id = $1
+`
+
+func (q *Queries) GetEnrollmentSets(ctx context.Context, enrollmentID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getEnrollmentSets, enrollmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var set_name string
+		if err := rows.Scan(&set_name); err != nil {
+			return nil, err
+		}
+		items = append(items, set_name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getManifestItems = `-- name: GetManifestItems :many
 SELECT DISTINCT
     d.identifier,
@@ -231,6 +376,118 @@ func (q *Queries) GetManifestItems(ctx context.Context, enrollmentID string) ([]
 	for rows.Next() {
 		var i GetManifestItemsRow
 		if err := rows.Scan(&i.Identifier, &i.Type, &i.ServerToken); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getSetDeclarations = `-- name: GetSetDeclarations :many
+SELECT declaration_identifier FROM set_declarations WHERE set_name = $1
+`
+
+func (q *Queries) GetSetDeclarations(ctx context.Context, setName string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getSetDeclarations, setName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var declaration_identifier string
+		if err := rows.Scan(&declaration_identifier); err != nil {
+			return nil, err
+		}
+		items = append(items, declaration_identifier)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getSets = `-- name: GetSets :many
+SELECT DISTINCT set_name FROM set_declarations
+`
+
+func (q *Queries) GetSets(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getSets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var set_name string
+		if err := rows.Scan(&set_name); err != nil {
+			return nil, err
+		}
+		items = append(items, set_name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getStatusValues = `-- name: GetStatusValues :many
+SELECT
+    enrollment_id,
+    path,
+    value,
+    status_id,
+    updated_at
+FROM
+    status_values
+WHERE
+    enrollment_id = ANY($1::text[]) AND
+    ($2::text IS NULL OR path LIKE $2::text)
+ORDER BY
+    enrollment_id, created_at
+`
+
+type GetStatusValuesParams struct {
+	Ids        []string
+	PathPrefix sql.NullString
+}
+
+type GetStatusValuesRow struct {
+	EnrollmentID string
+	Path         string
+	Value        string
+	StatusID     sql.NullString
+	UpdatedAt    time.Time
+}
+
+func (q *Queries) GetStatusValues(ctx context.Context, arg GetStatusValuesParams) ([]GetStatusValuesRow, error) {
+	rows, err := q.db.QueryContext(ctx, getStatusValues, pq.Array(arg.Ids), arg.PathPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetStatusValuesRow
+	for rows.Next() {
+		var i GetStatusValuesRow
+		if err := rows.Scan(
+			&i.EnrollmentID,
+			&i.Path,
+			&i.Value,
+			&i.StatusID,
+			&i.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -327,6 +584,54 @@ func (q *Queries) PutDeclarationStatus(ctx context.Context, arg PutDeclarationSt
 	return err
 }
 
+const putStatusValues = `-- name: PutStatusValues :exec
+INSERT INTO status_values
+    (enrollment_id, path, container_type, value_type, value, status_id)
+SELECT DISTINCT
+    $1::text,
+    v.path,
+    v.container_type,
+    v.value_type,
+    v.value,
+    $2::text
+FROM
+    -- the unnests zip the equal-length arrays by position.
+    (
+        SELECT
+            unnest($3::text[])           AS path,
+            unnest($4::text[]) AS container_type,
+            unnest($5::text[])     AS value_type,
+            unnest($6::text[])            AS value
+    ) v
+ON CONFLICT (enrollment_id, path, container_type, value_type, value) DO UPDATE
+SET
+    updated_at = CURRENT_TIMESTAMP,
+    status_id  = excluded.status_id
+`
+
+type PutStatusValuesParams struct {
+	EnrollmentID   string
+	StatusID       sql.NullString
+	Paths          []string
+	ContainerTypes []string
+	ValueTypes     []string
+	Vals           []string
+}
+
+// DISTINCT collapses values a report repeats: PostgreSQL refuses to update
+// the same row twice in one INSERT ... ON CONFLICT DO UPDATE.
+func (q *Queries) PutStatusValues(ctx context.Context, arg PutStatusValuesParams) error {
+	_, err := q.db.ExecContext(ctx, putStatusValues,
+		arg.EnrollmentID,
+		arg.StatusID,
+		pq.Array(arg.Paths),
+		pq.Array(arg.ContainerTypes),
+		pq.Array(arg.ValueTypes),
+		pq.Array(arg.Vals),
+	)
+	return err
+}
+
 const removeAllEnrollmentSets = `-- name: RemoveAllEnrollmentSets :execresult
 DELETE FROM
     enrollment_sets
@@ -348,6 +653,38 @@ WHERE
 func (q *Queries) RemoveDeclarationStatus(ctx context.Context, enrollmentID string) error {
 	_, err := q.db.ExecContext(ctx, removeDeclarationStatus, enrollmentID)
 	return err
+}
+
+const removeEnrollmentSet = `-- name: RemoveEnrollmentSet :execresult
+DELETE FROM enrollment_sets
+WHERE
+    enrollment_id = $1 AND
+    set_name = $2
+`
+
+type RemoveEnrollmentSetParams struct {
+	EnrollmentID string
+	SetName      string
+}
+
+func (q *Queries) RemoveEnrollmentSet(ctx context.Context, arg RemoveEnrollmentSetParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, removeEnrollmentSet, arg.EnrollmentID, arg.SetName)
+}
+
+const removeSetDeclaration = `-- name: RemoveSetDeclaration :execresult
+DELETE FROM set_declarations
+WHERE
+    set_name = $1 AND
+    declaration_identifier = $2
+`
+
+type RemoveSetDeclarationParams struct {
+	SetName               string
+	DeclarationIdentifier string
+}
+
+func (q *Queries) RemoveSetDeclaration(ctx context.Context, arg RemoveSetDeclarationParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, removeSetDeclaration, arg.SetName, arg.DeclarationIdentifier)
 }
 
 const selectStatusErrors = `-- name: SelectStatusErrors :many
@@ -484,4 +821,86 @@ func (q *Queries) SelectStatusReportByStatusID(ctx context.Context, arg SelectSt
 		&i.Idx,
 	)
 	return i, err
+}
+
+const storeDeclaration = `-- name: StoreDeclaration :execresult
+INSERT INTO declarations
+    (identifier, type, payload, server_token)
+VALUES
+    (
+        $1::text,
+        $2::text,
+        $3::jsonb,
+        encode(sha256(convert_to(concat($1::text, $2::text, $3::jsonb::text, CURRENT_TIMESTAMP::text, '0'), 'UTF8')), 'hex')
+    )
+ON CONFLICT (identifier) DO UPDATE
+SET
+    type         = excluded.type,
+    payload      = excluded.payload,
+    server_token = encode(sha256(convert_to(concat(excluded.identifier, excluded.type, excluded.payload::text, declarations.created_at::text, declarations.touched_ct::text), 'UTF8')), 'hex'),
+    updated_at   = CURRENT_TIMESTAMP
+WHERE
+    declarations.type IS DISTINCT FROM excluded.type OR
+    declarations.payload IS DISTINCT FROM excluded.payload
+`
+
+type StoreDeclarationParams struct {
+	Identifier string
+	Type       string
+	Payload    string
+}
+
+// The WHERE on the conflict update leaves an unchanged declaration untouched,
+// so it reports no affected rows and keeps its server token.
+func (q *Queries) StoreDeclaration(ctx context.Context, arg StoreDeclarationParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, storeDeclaration, arg.Identifier, arg.Type, arg.Payload)
+}
+
+const storeEnrollmentSet = `-- name: StoreEnrollmentSet :execresult
+INSERT INTO enrollment_sets
+    (enrollment_id, set_name)
+VALUES
+    ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type StoreEnrollmentSetParams struct {
+	EnrollmentID string
+	SetName      string
+}
+
+func (q *Queries) StoreEnrollmentSet(ctx context.Context, arg StoreEnrollmentSetParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, storeEnrollmentSet, arg.EnrollmentID, arg.SetName)
+}
+
+const storeSetDeclaration = `-- name: StoreSetDeclaration :execresult
+INSERT INTO set_declarations
+    (declaration_identifier, set_name)
+VALUES
+    ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type StoreSetDeclarationParams struct {
+	DeclarationIdentifier string
+	SetName               string
+}
+
+func (q *Queries) StoreSetDeclaration(ctx context.Context, arg StoreSetDeclarationParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, storeSetDeclaration, arg.DeclarationIdentifier, arg.SetName)
+}
+
+const touchDeclaration = `-- name: TouchDeclaration :execresult
+UPDATE
+    declarations
+SET
+    touched_ct   = touched_ct + 1,
+    server_token = encode(sha256(convert_to(concat(identifier, type, payload::text, created_at::text, (touched_ct + 1)::text), 'UTF8')), 'hex'),
+    updated_at   = CURRENT_TIMESTAMP
+WHERE
+    identifier = $1
+`
+
+func (q *Queries) TouchDeclaration(ctx context.Context, identifier string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, touchDeclaration, identifier)
 }

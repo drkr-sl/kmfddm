@@ -4,32 +4,22 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lib/pq"
+	"github.com/jessepeterson/kmfddm/storage/pgsql/sqlc"
 )
 
 // RetrieveEnrollmentSets retrieves the list of sets an enrollment is assigned to.
 // See also the storage package for documentation on the storage interfaces.
 func (s *PSQLStorage) RetrieveEnrollmentSets(ctx context.Context, enrollmentID string) ([]string, error) {
-	return s.singleStringColumn(
-		ctx,
-		`SELECT set_name FROM enrollment_sets WHERE enrollment_id = $1;`,
-		enrollmentID,
-	)
+	return s.q.GetEnrollmentSets(ctx, enrollmentID)
 }
 
 // StoreEnrollmentSet creates the association between an enrollment and a set.
 // See also the storage package for documentation on the storage interfaces.
 func (s *PSQLStorage) StoreEnrollmentSet(ctx context.Context, enrollmentID, setName string) (bool, error) {
-	result, err := s.db.ExecContext(
-		ctx, `
-INSERT INTO enrollment_sets
-    (enrollment_id, set_name)
-VALUES
-    ($1, $2)
-ON CONFLICT DO NOTHING;`,
-		enrollmentID,
-		setName,
-	)
+	result, err := s.q.StoreEnrollmentSet(ctx, sqlc.StoreEnrollmentSetParams{
+		EnrollmentID: enrollmentID,
+		SetName:      setName,
+	})
 	if err != nil {
 		return false, err
 	}
@@ -39,15 +29,10 @@ ON CONFLICT DO NOTHING;`,
 // RemoveEnrollmentSet removes the association between an enrollment and a set.
 // See also the storage package for documentation on the storage interfaces.
 func (s *PSQLStorage) RemoveEnrollmentSet(ctx context.Context, enrollmentID, setName string) (bool, error) {
-	result, err := s.db.ExecContext(
-		ctx, `
-DELETE FROM enrollment_sets
-WHERE
-    enrollment_id = $1 AND
-    set_name = $2;`,
-		enrollmentID,
-		setName,
-	)
+	result, err := s.q.RemoveEnrollmentSet(ctx, sqlc.RemoveEnrollmentSetParams{
+		EnrollmentID: enrollmentID,
+		SetName:      setName,
+	})
 	if err != nil {
 		return false, err
 	}
@@ -71,40 +56,14 @@ func (s *PSQLStorage) RetrieveEnrollmentIDs(ctx context.Context, declarations []
 	if len(declarations) < 1 && len(sets) < 1 && len(ids) < 1 {
 		return nil, errors.New("no parameters provided")
 	}
-	// an empty array matches nothing, so unused filters drop out of the OR.
-	rows, err := s.db.QueryContext(
-		ctx, `
-SELECT DISTINCT
-    es.enrollment_id
-FROM
-    enrollment_sets es
-    LEFT JOIN set_declarations sd
-        ON sd.set_name = es.set_name
-    LEFT JOIN declarations d
-        ON d.identifier = sd.declaration_identifier
-WHERE
-    d.identifier = ANY($1) OR
-    es.set_name = ANY($2) OR
-    es.enrollment_id = ANY($3);`,
-		pq.Array(declarations),
-		pq.Array(sets),
-		pq.Array(ids),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	retIDMap := make(map[string]struct{})
-	var retID string
-	for rows.Next() {
-		err = rows.Scan(&retID)
-		if err != nil {
-			break
-		}
-		retIDMap[retID] = struct{}{}
-	}
-	if err == nil {
-		err = rows.Err()
+	found, err := s.q.GetEnrollmentIDs(ctx, sqlc.GetEnrollmentIDsParams{
+		Declarations: declarations,
+		Sets:         sets,
+		Ids:          ids,
+	})
+	retIDMap := make(map[string]struct{}, len(found)+len(ids))
+	for _, id := range found {
+		retIDMap[id] = struct{}{}
 	}
 	// merge in the enrollment IDs directly supplied in params
 	for _, id := range ids {

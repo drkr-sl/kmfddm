@@ -181,3 +181,138 @@ WHERE
 ORDER BY
     sr.id DESC
 LIMIT 1;
+
+-- The WHERE on the conflict update leaves an unchanged declaration untouched,
+-- so it reports no affected rows and keeps its server token.
+-- name: StoreDeclaration :execresult
+INSERT INTO declarations
+    (identifier, type, payload, server_token)
+VALUES
+    (
+        sqlc.arg(identifier)::text,
+        sqlc.arg(type)::text,
+        sqlc.arg(payload)::jsonb,
+        encode(sha256(convert_to(concat(sqlc.arg(identifier)::text, sqlc.arg(type)::text, sqlc.arg(payload)::jsonb::text, CURRENT_TIMESTAMP::text, '0'), 'UTF8')), 'hex')
+    )
+ON CONFLICT (identifier) DO UPDATE
+SET
+    type         = excluded.type,
+    payload      = excluded.payload,
+    server_token = encode(sha256(convert_to(concat(excluded.identifier, excluded.type, excluded.payload::text, declarations.created_at::text, declarations.touched_ct::text), 'UTF8')), 'hex'),
+    updated_at   = CURRENT_TIMESTAMP
+WHERE
+    declarations.type IS DISTINCT FROM excluded.type OR
+    declarations.payload IS DISTINCT FROM excluded.payload;
+
+-- name: TouchDeclaration :execresult
+UPDATE
+    declarations
+SET
+    touched_ct   = touched_ct + 1,
+    server_token = encode(sha256(convert_to(concat(identifier, type, payload::text, created_at::text, (touched_ct + 1)::text), 'UTF8')), 'hex'),
+    updated_at   = CURRENT_TIMESTAMP
+WHERE
+    identifier = $1;
+
+-- name: DeleteDeclaration :execresult
+DELETE FROM declarations WHERE identifier = $1;
+
+-- name: GetDeclarationModTime :one
+SELECT updated_at FROM declarations WHERE identifier = $1;
+
+-- name: GetDeclarationSets :many
+SELECT set_name FROM set_declarations WHERE declaration_identifier = $1;
+
+-- name: GetDeclarationIdentifiers :many
+SELECT identifier FROM declarations;
+
+-- name: GetSetDeclarations :many
+SELECT declaration_identifier FROM set_declarations WHERE set_name = $1;
+
+-- name: StoreSetDeclaration :execresult
+INSERT INTO set_declarations
+    (declaration_identifier, set_name)
+VALUES
+    ($1, $2)
+ON CONFLICT DO NOTHING;
+
+-- name: RemoveSetDeclaration :execresult
+DELETE FROM set_declarations
+WHERE
+    set_name = $1 AND
+    declaration_identifier = $2;
+
+-- name: GetSets :many
+SELECT DISTINCT set_name FROM set_declarations;
+
+-- name: GetEnrollmentSets :many
+SELECT set_name FROM enrollment_sets WHERE enrollment_id = $1;
+
+-- name: StoreEnrollmentSet :execresult
+INSERT INTO enrollment_sets
+    (enrollment_id, set_name)
+VALUES
+    ($1, $2)
+ON CONFLICT DO NOTHING;
+
+-- name: RemoveEnrollmentSet :execresult
+DELETE FROM enrollment_sets
+WHERE
+    enrollment_id = $1 AND
+    set_name = $2;
+
+-- An empty array matches nothing, so unused filters drop out of the OR.
+-- name: GetEnrollmentIDs :many
+SELECT DISTINCT
+    es.enrollment_id
+FROM
+    enrollment_sets es
+    LEFT JOIN set_declarations sd
+        ON sd.set_name = es.set_name
+    LEFT JOIN declarations d
+        ON d.identifier = sd.declaration_identifier
+WHERE
+    d.identifier = ANY(sqlc.arg(declarations)::text[]) OR
+    es.set_name = ANY(sqlc.arg(sets)::text[]) OR
+    es.enrollment_id = ANY(sqlc.arg(ids)::text[]);
+
+-- DISTINCT collapses values a report repeats: PostgreSQL refuses to update
+-- the same row twice in one INSERT ... ON CONFLICT DO UPDATE.
+-- name: PutStatusValues :exec
+INSERT INTO status_values
+    (enrollment_id, path, container_type, value_type, value, status_id)
+SELECT DISTINCT
+    sqlc.arg(enrollment_id)::text,
+    v.path,
+    v.container_type,
+    v.value_type,
+    v.value,
+    sqlc.narg(status_id)::text
+FROM
+    -- the unnests zip the equal-length arrays by position.
+    (
+        SELECT
+            unnest(sqlc.arg(paths)::text[])           AS path,
+            unnest(sqlc.arg(container_types)::text[]) AS container_type,
+            unnest(sqlc.arg(value_types)::text[])     AS value_type,
+            unnest(sqlc.arg(vals)::text[])            AS value
+    ) v
+ON CONFLICT (enrollment_id, path, container_type, value_type, value) DO UPDATE
+SET
+    updated_at = CURRENT_TIMESTAMP,
+    status_id  = excluded.status_id;
+
+-- name: GetStatusValues :many
+SELECT
+    enrollment_id,
+    path,
+    value,
+    status_id,
+    updated_at
+FROM
+    status_values
+WHERE
+    enrollment_id = ANY(sqlc.arg(ids)::text[]) AND
+    (sqlc.narg(path_prefix)::text IS NULL OR path LIKE sqlc.narg(path_prefix)::text)
+ORDER BY
+    enrollment_id, created_at;

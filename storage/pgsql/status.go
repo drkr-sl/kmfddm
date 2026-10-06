@@ -6,13 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/jessepeterson/kmfddm/ddm"
 	"github.com/jessepeterson/kmfddm/storage"
 	"github.com/jessepeterson/kmfddm/storage/pgsql/sqlc"
-	"github.com/lib/pq"
 )
 
 // storeStatusDeclarations will completely remove and replace the set of declaration status for an enrollmentID with declarations.
@@ -50,54 +47,21 @@ func (s *PSQLStorage) storeStatusValues(ctx context.Context, enrollmentID, statu
 	if len(values) < 1 {
 		return nil
 	}
-	// PostgreSQL refuses to update the same row twice in one INSERT ... ON
-	// CONFLICT DO UPDATE, so collapse values a report repeats.
-	type valueKey struct{ path, containerType, valueType, value string }
-	seen := make(map[valueKey]struct{}, len(values))
-	const argLen = 6
-	args := make([]interface{}, 0, len(values)*argLen)
-	var argSQL []string
-	for _, v := range values {
-		k := valueKey{v.Path, v.ContainerType, v.ValueType, string(v.Value)}
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		n := len(args)
-		ph := make([]string, argLen)
-		for i := range ph {
-			ph[i] = "$" + strconv.Itoa(n+i+1)
-		}
-		argSQL = append(argSQL, "("+strings.Join(ph, ", ")+")")
-		args = append(args,
-			enrollmentID,
-			v.Path,
-			v.ContainerType,
-			v.ValueType,
-			k.value,
-			nullEmptyString(statusID),
-		)
+	params := sqlc.PutStatusValuesParams{
+		EnrollmentID:   enrollmentID,
+		StatusID:       nullEmptyString(statusID),
+		Paths:          make([]string, len(values)),
+		ContainerTypes: make([]string, len(values)),
+		ValueTypes:     make([]string, len(values)),
+		Vals:           make([]string, len(values)),
 	}
-	_, err := s.db.ExecContext(
-		ctx, `
-INSERT INTO status_values
-    (
-        enrollment_id,
-        path,
-        container_type,
-        value_type,
-        value,
-        status_id
-    )
-VALUES
-    `+strings.Join(argSQL, ", ")+`
-ON CONFLICT (enrollment_id, path, container_type, value_type, value) DO UPDATE
-SET
-    updated_at = CURRENT_TIMESTAMP,
-    status_id = excluded.status_id;`,
-		args...,
-	)
-	return err
+	for i, v := range values {
+		params.Paths[i] = v.Path
+		params.ContainerTypes[i] = v.ContainerType
+		params.ValueTypes[i] = v.ValueType
+		params.Vals[i] = string(v.Value)
+	}
+	return s.q.PutStatusValues(ctx, params)
 }
 
 func (s *PSQLStorage) storeStatusErrors(ctx context.Context, enrollmentID, statusID string, errors []ddm.StatusError) error {
@@ -245,54 +209,23 @@ func (s *PSQLStorage) RetrieveStatusErrors(ctx context.Context, enrollmentIDs []
 // The search can be filtered with pathPrefix by using SQL LIKE syntax.
 // See also the storage package for documentation on the storage interfaces.
 func (s *PSQLStorage) RetrieveStatusValues(ctx context.Context, enrollmentIDs []string, pathPrefix string) (map[string][]storage.StatusValue, error) {
-	args := []interface{}{pq.Array(enrollmentIDs)}
-	prefixCond := ""
-	if pathPrefix != "" {
-		args = append(args, pathPrefix)
-		prefixCond = `AND path LIKE $2`
-	}
-	rows, err := s.db.QueryContext(
-		ctx, `
-SELECT
-    enrollment_id,
-    path,
-    value,
-    status_id,
-    updated_at
-FROM
-    status_values
-WHERE
-    enrollment_id = ANY($1) `+prefixCond+`
-ORDER BY
-    enrollment_id, created_at;`,
-		args...,
-	)
+	rows, err := s.q.GetStatusValues(ctx, sqlc.GetStatusValuesParams{
+		Ids:        enrollmentIDs,
+		PathPrefix: nullEmptyString(pathPrefix),
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	resp := make(map[string][]storage.StatusValue)
-	var id string
-	for rows.Next() {
-		sVal := storage.StatusValue{}
-		var statusID sql.NullString
-		err = rows.Scan(
-			&id,
-			&sVal.Path,
-			&sVal.Value,
-			&statusID,
-			&sVal.Timestamp,
-		)
-		if err != nil {
-			break
-		}
-		sVal.StatusID = statusID.String
-		resp[id] = append(resp[id], sVal)
+	for _, row := range rows {
+		resp[row.EnrollmentID] = append(resp[row.EnrollmentID], storage.StatusValue{
+			Path:      row.Path,
+			Value:     row.Value,
+			StatusID:  row.StatusID.String,
+			Timestamp: row.UpdatedAt,
+		})
 	}
-	if err == nil {
-		err = rows.Err()
-	}
-	return resp, err
+	return resp, nil
 }
 
 // RetrieveStatusReport retrieves the status report for an enrollment ID.

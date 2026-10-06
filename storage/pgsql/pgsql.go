@@ -156,29 +156,6 @@ func resultChangedRows(r sql.Result) (bool, error) {
 	return rowCt > 0, nil
 }
 
-// singleStringColumn executes sql with args using ctx and expects a single
-// column string to return all the rows in a string slice.
-func (s *PSQLStorage) singleStringColumn(ctx context.Context, sql string, args ...interface{}) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var str string
-	var strs []string
-	for rows.Next() {
-		err = rows.Scan(&str)
-		if err != nil {
-			break
-		}
-		strs = append(strs, str)
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	return strs, err
-}
-
 // tx wraps g in transactions using db.
 // If g returns an err the transaction will be rolled back; otherwise committed.
 func tx(ctx context.Context, db *sql.DB, q *sqlc.Queries, g func(ctx context.Context, tx *sql.Tx, qtx *sqlc.Queries) error) error {
