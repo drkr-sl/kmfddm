@@ -1,0 +1,46 @@
+package pgsql
+
+import (
+	"context"
+	"hash"
+	"hash/fnv"
+	"os"
+	"testing"
+
+	"github.com/jessepeterson/kmfddm/test/e2e"
+
+	_ "github.com/lib/pq"
+)
+
+func TestPgSQL(t *testing.T) {
+	testDSN := os.Getenv("KMFDDM_PGSQL_STORAGE_TEST_DSN")
+	if testDSN == "" {
+		t.Skip("KMFDDM_PGSQL_STORAGE_TEST_DSN not set")
+	}
+
+	storage, err := New(func() hash.Hash { return fnv.New128() }, WithDSN(testDSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	t.Run("TestE2E", func(t *testing.T) {
+		e2e.TestE2E(t, ctx, storage)
+	})
+
+	// keepErrors splits the errors of a status report
+	const keepReports, keepErrors = 3, 2
+	retentionStorage, err := New(
+		func() hash.Hash { return fnv.New128() },
+		WithDSN(testDSN),
+		WithStatusReportDeletion(keepReports),
+		WithErrorDeletion(keepErrors),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("TestStatusRetention", func(t *testing.T) {
+		e2e.TestStatusRetention(t, ctx, retentionStorage, keepReports, keepErrors)
+	})
+}
